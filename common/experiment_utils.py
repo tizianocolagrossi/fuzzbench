@@ -16,6 +16,7 @@
 import os
 import posixpath
 
+from common import benchmark_utils
 from common import environment
 from common import experiment_path as exp_path
 
@@ -55,6 +56,24 @@ def get_experiment_folders_dir():
     return exp_path.path('experiment-folders')
 
 
+def get_experiment_type(benchmarks):
+    """Returns the experiment type based on the type of |benchmarks|, i.e.,
+    'code' or 'bug'.
+    Raises ValueError if the benchmark types are mixed.
+    """
+    for benchmark_type in benchmark_utils.BenchmarkType:
+        type_value = benchmark_type.value
+        if all(
+                benchmark_utils.get_type(benchmark) == type_value
+                for benchmark in benchmarks):
+            return type_value
+
+    benchmark_types = ';'.join(
+        [f'{b}: {benchmark_utils.get_type(b)}' for b in benchmarks])
+    raise ValueError('Cannot mix bug benchmarks with code coverage benchmarks: '
+                     f'{benchmark_types}.')
+
+
 def get_cloud_project():
     """Returns the cloud project."""
     return os.environ['CLOUD_PROJECT']
@@ -78,26 +97,41 @@ def get_custom_seed_corpora_filestore_path():
                           'custom_seed_corpora')
 
 
+def get_oss_fuzz_corpora_unarchived_path():
+    """Returns path containing the user-provided seed corpora."""
+    return posixpath.join(get_experiment_filestore_path(),
+                          'oss_fuzz_unarchived')
+
+
+def get_random_corpora_filestore_path():
+    """Returns path containing seed corpora for the target fuzzing experiment."""  # pylint: disable=line-too-long
+    return posixpath.join(get_experiment_filestore_path(), 'random_corpora')
+
+
 def get_dispatcher_instance_name(experiment: str) -> str:
     """Returns a dispatcher instance name for an experiment."""
-    return 'd-%s' % experiment
+    return f'd-{experiment}'
 
 
 def get_trial_instance_name(experiment: str, trial_id: int) -> str:
     """Returns a unique instance name for each trial of an experiment."""
-    return 'r-%s-%d' % (experiment, trial_id)
+    return f'r-{experiment}-{trial_id}'
 
 
 def get_cycle_filename(basename: str, cycle: int) -> str:
     """Returns a filename for a file that is relevant to a particular snapshot
     cycle."""
-    filename = basename + '-' + ('%04d' % cycle)
-    return filename
+    return f'{basename}-{cycle:04d}'
 
 
 def get_corpus_archive_name(cycle: int) -> str:
     """Returns a corpus archive name given a cycle."""
     return get_cycle_filename('corpus-archive', cycle) + '.tar.gz'
+
+
+def get_coverage_archive_name(cycle: int) -> str:
+    """Returns a corpus archive name given a cycle."""
+    return get_cycle_filename('coverage-archive', cycle) + '.json'
 
 
 def get_stats_filename(cycle: int) -> str:
@@ -120,17 +154,22 @@ def is_local_experiment():
     return bool(environment.get('LOCAL_EXPERIMENT'))
 
 
+def is_micro_experiment():
+    """Returns True if running a micro experiment."""
+    return bool(environment.get('MICRO_EXPERIMENT'))
+
+
 def get_trial_dir(fuzzer, benchmark, trial_id):
     """Returns the unique directory for |fuzzer|, |benchmark|, and
     |trial_id|."""
     benchmark_fuzzer_directory = get_benchmark_fuzzer_dir(benchmark, fuzzer)
-    trial_subdir = 'trial-%d' % trial_id
+    trial_subdir = f'trial-{trial_id}'
     return posixpath.join(benchmark_fuzzer_directory, trial_subdir)
 
 
 def get_benchmark_fuzzer_dir(benchmark, fuzzer):
     """Returns the directory for |benchmark| and |fuzzer|."""
-    return '%s-%s' % (benchmark, fuzzer)
+    return f'{benchmark}-{fuzzer}'
 
 
 def get_trial_bucket_dir(fuzzer, benchmark, trial_id):

@@ -38,10 +38,7 @@ def build():
 def fuzz(input_corpus, output_corpus, target_binary):
     """Run fuzzer. Wrapper that uses the defaults when calling
     run_fuzzer."""
-    run_fuzzer(input_corpus,
-               output_corpus,
-               target_binary,
-               extra_flags=['-keep_seed=1', '-cross_over_uniform_dist=1'])
+    run_fuzzer(input_corpus, output_corpus, target_binary)
 
 
 def run_fuzzer(input_corpus, output_corpus, target_binary, extra_flags=None):
@@ -56,6 +53,21 @@ def run_fuzzer(input_corpus, output_corpus, target_binary, extra_flags=None):
     os.makedirs(crashes_dir)
     os.makedirs(output_corpus)
 
+    # Enable symbolization if needed.
+    # Note: if the flags are like `symbolize=0:..:symbolize=1` then
+    # only symbolize=1 is respected.
+    for flag in extra_flags:
+        if flag.startswith('-focus_function'):
+            if 'ASAN_OPTIONS' in os.environ:
+                os.environ['ASAN_OPTIONS'] += ':symbolize=1'
+            else:
+                os.environ['ASAN_OPTIONS'] = 'symbolize=1'
+            if 'UBSAN_OPTIONS' in os.environ:
+                os.environ['UBSAN_OPTIONS'] += ':symbolize=1'
+            else:
+                os.environ['UBSAN_OPTIONS'] = 'symbolize=1'
+            break
+
     flags = [
         '-print_final_stats=1',
         # `close_fd_mask` to prevent too much logging output from the target.
@@ -66,6 +78,10 @@ def run_fuzzer(input_corpus, output_corpus, target_binary, extra_flags=None):
         '-ignore_ooms=1',
         '-ignore_timeouts=1',
         '-ignore_crashes=1',
+        '-entropic=1',
+        '-keep_seed=1',
+        '-cross_over_uniform_dist=1',
+        '-entropic_scale_per_exec_time=1',
 
         # Don't use LSAN's leak detection. Other fuzzers won't be using it and
         # using it will cause libFuzzer to find "crashes" no one cares about.

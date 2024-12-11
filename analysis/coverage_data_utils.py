@@ -26,7 +26,7 @@ from analysis import data_utils
 from common import filestore_utils
 from common import logs
 
-logger = logs.Logger('coverage_data_utils')
+logger = logs.Logger()
 
 
 def fuzzer_and_benchmark_to_key(fuzzer: str, benchmark: str) -> str:
@@ -107,7 +107,7 @@ def get_fuzzer_covered_branches(fuzzer: str, benchmark: str, filestore: str):
             logger.warning(
                 'covered_branches.json file: %s could not be copied.', src_file)
             return {}
-        with open(dst_file.name) as json_file:
+        with open(dst_file.name, encoding='utf-8') as json_file:
             return json.load(json_file)
 
 

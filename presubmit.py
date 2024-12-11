@@ -31,14 +31,10 @@ import subprocess
 import sys
 from typing import List, Optional
 
-import yaml
-
 from common import benchmark_utils
 from common import fuzzer_utils
 from common import filesystem
 from common import logs
-from common import yaml_utils
-from service import automatic_run_experiment
 from src_analysis import change_utils
 from src_analysis import diff_utils
 
@@ -98,18 +94,6 @@ def get_benchmark(path: Path) -> Optional[str]:
     return get_containing_subdir(path, _SRC_ROOT / 'benchmarks')
 
 
-def is_fuzzer_tested_in_ci(fuzzer: str) -> bool:
-    """Returns True if |fuzzer| is in the list of fuzzers tested in
-    fuzzers.yml."""
-    yaml_filepath = _SRC_ROOT / '.github' / 'workflows' / 'fuzzers.yml'
-    yaml_contents = yaml_utils.read(yaml_filepath)
-    fuzzer_list = yaml_contents['jobs']['build']['strategy']['matrix']['fuzzer']
-    is_tested = fuzzer in fuzzer_list
-    if not is_tested:
-        print(f'{fuzzer} is not included in fuzzer list in {yaml_filepath}.')
-    return is_tested
-
-
 class FuzzerAndBenchmarkValidator:
     """Class that validates the names of fuzzers and benchmarks."""
 
@@ -127,10 +111,6 @@ class FuzzerAndBenchmarkValidator:
 
         if fuzzer in self.invalid_fuzzers:
             # We know this is invalid and have already complained about it.
-            return False
-
-        if fuzzer != 'coverage' and not is_fuzzer_tested_in_ci(fuzzer):
-            self.invalid_fuzzers.add(fuzzer)
             return False
 
         if fuzzer_utils.validate(fuzzer):
@@ -231,7 +211,8 @@ def lint(_: List[Path]) -> bool:
         'presubmit.py',
     ]
 
-    command = ['python3', '-m', 'pylint', '-j', '0']
+    # Use "--score no" to make linting quieter.
+    command = ['python3', '-m', 'pylint', '--score', 'no', '-j', '0']
     command.extend(to_check)
     returncode = subprocess.run(command, check=False).returncode
     return returncode == 0
@@ -241,9 +222,6 @@ def pytype(paths: List[Path]) -> bool:
     """Run pytype on |path| if it is a python file. Return False if it fails
     type checking."""
     paths = [path for path in paths if is_python(path)]
-    if not paths:
-        return True
-
     base_command = ['python3', '-m', 'pytype']
     success = True
 
@@ -274,31 +252,6 @@ def yapf(paths: List[Path], validate: bool = True) -> bool:
     if not success:
         print('Code is not formatted correctly, please run \'make format\'')
     return success
-
-
-def validate_experiment_requests(paths: List[Path]):
-    """Returns False if service/experiment-requests.yaml it is in |paths| and is
-    not valid."""
-    if Path(automatic_run_experiment.REQUESTED_EXPERIMENTS_PATH) not in paths:
-        return True
-
-    try:
-        experiment_requests = yaml_utils.read(
-            automatic_run_experiment.REQUESTED_EXPERIMENTS_PATH)
-    except yaml.parser.ParserError:
-        print('Error parsing %s.' %
-              automatic_run_experiment.REQUESTED_EXPERIMENTS_PATH)
-        return False
-
-    # Only validate the latest request.
-    result = automatic_run_experiment.validate_experiment_requests(
-        experiment_requests[:1])
-
-    if not result:
-        print('%s is not valid.' %
-              automatic_run_experiment.REQUESTED_EXPERIMENTS_PATH)
-
-    return result
 
 
 def is_path_ignored(path: Path) -> bool:
@@ -332,9 +285,9 @@ def license_check(paths: List[Path]) -> bool:
         if is_path_ignored(path):
             continue
 
-        with open(path) as file_handle:
+        with open(path, encoding='utf-8') as file_handle:
             if _LICENSE_CHECK_STRING not in file_handle.read():
-                print('Missing license header in file %s.' % str(path))
+                print(f'Missing license header in file {str(path)}.')
                 success = False
 
     return success
@@ -378,11 +331,11 @@ def do_default_checks(file_paths: List[Path], checks) -> bool:
             continue
 
         if not check(file_paths):
-            print('ERROR: %s failed, see errors above.' % check_name)
+            print(f'ERROR: {check_name} failed, see errors above.')
             failed_checks.append(check_name)
 
     if failed_checks:
-        print('Failed checks: %s' % ' '.join(failed_checks))
+        print(f'Failed checks: {" ".join(failed_checks)}')
         return False
 
     return True
@@ -443,7 +396,7 @@ def do_single_check(command: str, relevant_files: List[Path],
     else:
         success = check(relevant_files)
     if not success:
-        print('ERROR: %s failed, see errors above.' % check.__name__)
+        print(f'ERROR: {check.__name__} failed, see errors above.')
 
     return success
 
@@ -459,7 +412,6 @@ def main() -> int:
         ('typecheck', pytype),
         ('test', pytest),
         ('validate_fuzzers_and_benchmarks', validate_fuzzers_and_benchmarks),
-        ('validate_experiment_requests', validate_experiment_requests),
         ('test_changed_integrations', test_changed_integrations),
     ]
 

@@ -17,12 +17,18 @@ FROM $parent_image
 
 # Install the necessary packages.
 RUN apt-get update && \
-    apt-get install -y wget libstdc++-5-dev libtool-bin automake flex bison \
-                       libglib2.0-dev libpixman-1-dev python3-setuptools unzip
+    apt-get install -y \
+        build-essential \
+        git \
+        flex \
+        bison \
+        libglib2.0-dev \
+        libpixman-1-dev \
+        libstdc++-$(gcc --version|head -n1|sed 's/\..*//'|sed 's/.* //')-dev
 
 # Download afl++
 RUN git clone https://github.com/AFLplusplus/AFLplusplus.git /afl && \
-    cd /afl && git checkout e21738a24852e0ed9b346c28aeb4132a34d5b7cc
+    cd /afl && git checkout 56d5aa3101945e81519a3fac8783d0d8fad82779
     
 # Build afl++ without Python support as we don't need it.
 # Set AFL_NO_X86 to skip flaky tests.

@@ -41,7 +41,7 @@ GRACE_TIME_SECONDS = 5 * 60
 
 FAIL_WAIT_SECONDS = 10 * 60
 
-logger = logs.Logger('scheduler')  # pylint: disable=invalid-name
+logger = logs.Logger()  # pylint: disable=invalid-name
 
 RESOURCES_DIR = os.path.join(utils.ROOT_DIR, 'experiment', 'resources')
 
@@ -100,8 +100,12 @@ def get_expired_trials(experiment: str, max_total_time: int):
 def all_trials_ended(experiment: str) -> bool:
     """Return a bool if there are any trials in |experiment| that have not
     started."""
-    return not get_experiment_trials(experiment).filter(
-        models.Trial.time_ended.is_(None)).all()
+    try:
+        return not get_experiment_trials(experiment).filter(
+            models.Trial.time_ended.is_(None)).all()
+    except RuntimeError:
+        logger.error('Failed to check whether all trials ended.')
+        return False
 
 
 def delete_instances(instances, experiment_config):
@@ -214,6 +218,8 @@ class TrialInstanceManager:  # pylint: disable=too-many-instance-attributes
     def __init__(self, num_trials, experiment_config):
         self.experiment_config = experiment_config
         self.num_trials = num_trials
+        self.num_preemptible_restarts = 0
+        self.num_preemptible_omits = 0
 
         # Bound for the number of nonpreemptibles we can start if the experiment
         # specified preemptible_runners.
@@ -286,7 +292,7 @@ class TrialInstanceManager:  # pylint: disable=too-many-instance-attributes
         |preemptible_starts| is the number of preemptibles we've already
         started."""
         if not self.experiment_config.get('preemptible_runners'):
-            # This code shouldn't be executed in a non preemptible experiment.
+            # This code shouldn't be executed in a nonpreemptible experiment.
             # But just in case it is, it's not OK to create a preemptible trial
             # in a non-preemptible experiment.
             return False
@@ -311,8 +317,8 @@ class TrialInstanceManager:  # pylint: disable=too-many-instance-attributes
     def can_start_nonpreemptible(self, nonpreemptible_starts: int) -> bool:
         """Returns True if we can start a nonpreemptible trial."""
         if not self.experiment_config.get('preemptible_runners'):
-            # This code shouldn't be executed in a preemptible experiment.
-            # But just in case it is, it's not always OK to a non-preemptible
+            # This code shouldn't be executed in a nonpreemptible experiment.
+            # But just in case it is, it's always OK to start a non-preemptible
             # trial in a non-preemptible experiment.
             return True
 
@@ -328,6 +334,20 @@ class TrialInstanceManager:  # pylint: disable=too-many-instance-attributes
         """Returns the count of nonpreemptible trials that have been started."""
         return get_started_trials(self.experiment_config['experiment']).filter(
             models.Trial.preemptible.is_(False)).count()
+
+    def _format_count_info(self, trial: models.Trial, count: int) -> str:
+        """Formats a trial's count and information for logging."""
+        return (f'Trial ID: {trial.id}. '
+                f'Benchmark-Fuzzer pair: {trial.benchmark}-{trial.fuzzer}. '
+                f'Accumulating to {count/self.num_trials*100:3.2f}% '
+                f'({count} / {self.num_trials}) of all trials.')
+
+    def _log_restart(self, preemptible: bool, trial: models.Trial,
+                     count: int) -> None:
+        """Logs the count of restarting trials."""
+        logs.info('Restarting a preemptible trial as a %s one: %s',
+                  'preemptible' if preemptible else 'nonpreemptible',
+                  self._format_count_info(trial, count))
 
     def _get_preempted_replacements(self,
                                     preempted_trials) -> List[models.Trial]:
@@ -348,7 +368,10 @@ class TrialInstanceManager:  # pylint: disable=too-many-instance-attributes
             # trying nonpreemptible to minimize cost.
             if self.can_start_preemptible():
                 # See if we can replace with a preemptible.
+                self.num_preemptible_restarts += 1
                 replacements.append(replace_trial(trial, preemptible=True))
+
+                self._log_restart(True, trial, self.num_preemptible_restarts)
                 continue
 
             if self.can_start_nonpreemptible(nonpreemptible_starts):
@@ -356,7 +379,14 @@ class TrialInstanceManager:  # pylint: disable=too-many-instance-attributes
                 # replace it with a nonpreemptible.
                 nonpreemptible_starts += 1
                 replacements.append(replace_trial(trial, preemptible=False))
+
+                self._log_restart(False, trial, nonpreemptible_starts)
                 continue
+
+            self.num_preemptible_omits += 1
+            logs.warning(
+                'Omitting a trial to cap cost: %s',
+                self._format_count_info(trial, self.num_preemptible_omits))
 
         return replacements
 
@@ -555,13 +585,13 @@ def schedule_loop(experiment_config: dict):
         if local_experiment:
             runner_num_cpu_cores = experiment_config['runner_num_cpu_cores']
             processes = runners_cpus // runner_num_cpu_cores
-            logger.info('Scheduling runners from core 0 to %d.' %
-                        (runner_num_cpu_cores * processes - 1))
+            logger.info('Scheduling runners from core 0 to %d.',
+                        runner_num_cpu_cores * processes - 1)
             core_allocation = {}
             for cpu in range(0, runner_num_cpu_cores * processes,
                              runner_num_cpu_cores):
-                core_allocation['%d-%d' %
-                                (cpu, cpu + runner_num_cpu_cores - 1)] = None
+                core_allocation[
+                    f'{cpu}-{cpu + runner_num_cpu_cores - 1}'] = None
             pool_args = (processes,)
         else:
             pool_args = (runners_cpus,)
@@ -659,7 +689,7 @@ def start_trials(trials, experiment_config: dict, pool, core_allocation=None):
     return started_trials
 
 
-class TrialProxy:
+class TrialProxy:  # pylint: disable=too-many-instance-attributes
     """A proxy object for a model.Trial. TrialProxy's allow these fields to be
     set and retreived without making any database calls."""
 
@@ -671,6 +701,7 @@ class TrialProxy:
         self.time_ended = trial.time_ended
         self.preemptible = trial.preemptible
         self.cpuset = None
+        self.trial_group_num = trial.trial_group_num
 
 
 def _initialize_logs(experiment):
@@ -699,7 +730,7 @@ def _start_trial(trial: TrialProxy, experiment_config: dict, cpuset=None):
     logger.info('Start trial %d.', trial.id)
     started = create_trial_instance(trial.fuzzer, trial.benchmark, trial.id,
                                     experiment_config, trial.preemptible,
-                                    cpuset)
+                                    cpuset, trial.trial_group_num)
     if started:
         trial.time_started = datetime_now()
         trial.cpuset = cpuset
@@ -713,6 +744,7 @@ def render_startup_script_template(  # pylint: disable=too-many-arguments
         fuzzer: str,
         benchmark: str,
         trial_id: int,
+        trial_group_num: int,
         experiment_config: dict,
         cpuset=None):
     """Render the startup script using the template and the parameters
@@ -730,6 +762,8 @@ def render_startup_script_template(  # pylint: disable=too-many-arguments
         'experiment': experiment,
         'fuzzer': fuzzer,
         'trial_id': trial_id,
+        'trial_group_num': trial_group_num,
+        'micro_experiment': experiment_config['micro_experiment'],
         'max_total_time': experiment_config['max_total_time'],
         'snapshot_period': experiment_config['snapshot_period'],
         'experiment_filestore': experiment_config['experiment_filestore'],
@@ -742,6 +776,7 @@ def render_startup_script_template(  # pylint: disable=too-many-arguments
         'no_dictionaries': experiment_config['no_dictionaries'],
         'oss_fuzz_corpus': experiment_config['oss_fuzz_corpus'],
         'num_cpu_cores': experiment_config['runner_num_cpu_cores'],
+        'private': experiment_config['private'],
         'cpuset': cpuset,
         'custom_seed_corpus_dir': experiment_config['custom_seed_corpus_dir'],
     }
@@ -759,16 +794,18 @@ def create_trial_instance(  # pylint: disable=too-many-arguments
         trial_id: int,
         experiment_config: dict,
         preemptible: bool,
-        cpuset=None) -> bool:
+        cpuset=None,
+        trial_group_num: int = 0) -> bool:
     """Create or start a trial instance for a specific
     trial_id,fuzzer,benchmark."""
     instance_name = experiment_utils.get_trial_instance_name(
         experiment_config['experiment'], trial_id)
     startup_script = render_startup_script_template(instance_name, fuzzer,
                                                     benchmark, trial_id,
+                                                    trial_group_num,
                                                     experiment_config, cpuset)
-    startup_script_path = '/tmp/%s-start-docker.sh' % instance_name
-    with open(startup_script_path, 'w') as file_handle:
+    startup_script_path = f'/tmp/{instance_name}-start-docker.sh'
+    with open(startup_script_path, 'w', encoding='utf-8') as file_handle:
         file_handle.write(startup_script)
 
     return gcloud.create_instance(instance_name,
@@ -786,7 +823,7 @@ def main():
     })
 
     if len(sys.argv) != 2:
-        print('Usage: {} <experiment_config.yaml>'.format(sys.argv[0]))
+        print(f'Usage: {sys.argv[0]} <experiment_config.yaml>')
         return 1
 
     experiment_config = yaml_utils.read(sys.argv[1])

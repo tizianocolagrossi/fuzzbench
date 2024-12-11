@@ -24,7 +24,7 @@ from common import new_process
 from common import sanitizer
 from experiment.measurer import run_coverage
 
-logger = logs.Logger('run_crashes')
+logger = logs.Logger()
 
 Crash = collections.namedtuple('Crash', [
     'crash_testcase', 'crash_type', 'crash_address', 'crash_state',
@@ -59,9 +59,8 @@ def process_crash(app_binary, crash_testcase_path, crashes_dir):
     env = os.environ.copy()
     sanitizer.set_sanitizer_options(env)
     command = [
-        app_binary,
-        '-timeout=%d' % run_coverage.UNIT_TIMEOUT,
-        '-rss_limit_mb=%d' % run_coverage.RSS_LIMIT_MB, crash_testcase_path
+        app_binary, f'-timeout={run_coverage.UNIT_TIMEOUT}',
+        f'-rss_limit_mb={run_coverage.RSS_LIMIT_MB}', crash_testcase_path
     ]
     app_binary_dir = os.path.dirname(app_binary)
     result = new_process.execute(command,

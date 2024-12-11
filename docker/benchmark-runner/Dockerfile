@@ -42,7 +42,8 @@ FROM gcr.io/fuzzbench/runners/$fuzzer/$benchmark-intermediate
 
 # Install runtime dependencies for benchmarks.
 
-RUN apt-get update -y && apt-get install -y \
+RUN apt-get update -y && \
+    DEBIAN_FRONTEND="noninteractive" apt-get install -y \
     libglib2.0-0 \
     libxml2 \
     libarchive13 \
@@ -63,8 +64,6 @@ COPY --from=builder /out/ ./
 COPY benchmarks $ROOT_DIR/benchmarks
 # Copy the fuzzers directory.
 COPY fuzzers $ROOT_DIR/fuzzers
-# Create empty __init__.py to allow python deps to work.
-RUN touch __init__.py
 
 # Define environment variables used when we run the fuzzer:
 # - Directory to get starting seeds from.

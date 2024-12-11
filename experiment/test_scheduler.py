@@ -114,6 +114,8 @@ docker run \\
 -e BENCHMARK={benchmark} \\
 -e EXPERIMENT=test-experiment \\
 -e TRIAL_ID=9 \\
+-e TRIAL_GROUP_NUM=0 \\
+-e MICRO_EXPERIMENT=False \\
 -e MAX_TOTAL_TIME=86400 \\
 -e SNAPSHOT_PERIOD=900 \\
 -e NO_SEEDS=False \\
@@ -124,11 +126,13 @@ docker run \\
 -e EXPERIMENT_FILESTORE=gs://experiment-data \\
 -e REPORT_FILESTORE=gs://web-reports \\
 -e FUZZ_TARGET={oss_fuzz_target} \\
+-e PRIVATE=False \\
 -e LOCAL_EXPERIMENT=False \\
 --name=runner-container \\
+--shm-size=2g \\
 --cap-add SYS_NICE --cap-add SYS_PTRACE \\
 --security-opt seccomp=unconfined \\
-{docker_image_url} 2>&1 | tee /tmp/runner-log.txt'''
+{docker_image_url} 2>&1 | tee /tmp/runner-log-9.txt'''
     with mock.patch('common.benchmark_utils.get_fuzz_target',
                     return_value=expected_target):
         _test_create_trial_instance(benchmark, expected_image, expected_target,
@@ -170,9 +174,10 @@ docker run \\
 -e FUZZ_TARGET={oss_fuzz_target} \\
 -e LOCAL_EXPERIMENT=True \\
 \\
+--shm-size=2g \\
 --cap-add SYS_NICE --cap-add SYS_PTRACE \\
 --security-opt seccomp=unconfined \\
-{docker_image_url} 2>&1 | tee /tmp/runner-log.txt'''
+{docker_image_url} 2>&1 | tee /tmp/runner-log-9.txt'''
     _test_create_trial_instance(benchmark, expected_image, expected_target,
                                 expected_startup_script,
                                 local_experiment_config, False)
@@ -191,7 +196,7 @@ def _test_create_trial_instance(  # pylint: disable=too-many-locals
     scheduler.create_trial_instance(fuzzer_param, benchmark, trial,
                                     experiment_config, preemptible)
     instance_name = 'r-test-experiment-9'
-    expected_startup_script_path = '/tmp/%s-start-docker.sh' % instance_name
+    expected_startup_script_path = f'/tmp/{instance_name}-start-docker.sh'
 
     mocked_create_instance.assert_called_with(
         instance_name,
@@ -200,7 +205,7 @@ def _test_create_trial_instance(  # pylint: disable=too-many-locals
         startup_script=expected_startup_script_path,
         preemptible=preemptible)
 
-    with open(expected_startup_script_path) as file_handle:
+    with open(expected_startup_script_path, encoding='utf-8') as file_handle:
         content = file_handle.read()
         check_from = '# Start docker.'
         assert check_from in content
@@ -221,7 +226,7 @@ def test_start_trials_not_started(mocked_create_instance, pending_trials,
     mocked_create_instance.return_value = False
     with ThreadPool() as pool:
         result = scheduler.start_trials(pending_trials, experiment_config, pool)
-    assert result == []
+    assert not result
 
 
 @mock.patch('common.new_process.execute')
@@ -371,7 +376,7 @@ def test_get_preempted_trials_nonpreemptible(experiment_config, db):
     """Tests that TrialInstanceManager.get_preempted_trials returns no trials
     for a nonpreemptible experiment."""
     trial_instance_manager = get_trial_instance_manager(experiment_config)
-    assert trial_instance_manager.get_preempted_trials() == []
+    assert not trial_instance_manager.get_preempted_trials()
 
 
 @mock.patch('common.gce._get_instance_items', return_value=[])
@@ -390,7 +395,7 @@ def test_get_preempted_trials_stale_preempted(_, preempt_exp_conf):
             'experiment.scheduler.TrialInstanceManager.'
             '_get_started_unfinished_instances',
             return_value=[instance_name]):
-        assert trial_instance_manager.get_preempted_trials() == []
+        assert not trial_instance_manager.get_preempted_trials()
 
 
 def _get_preempted_instance_item(trial_id, exp_conf):

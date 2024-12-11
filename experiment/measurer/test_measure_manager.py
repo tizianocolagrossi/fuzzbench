@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Tests for measure_manager.py."""
-
 import os
 import shutil
 from unittest import mock
@@ -27,6 +26,7 @@ from database import utils as db_utils
 from experiment.build import build_utils
 from experiment.measurer import measure_manager
 from test_libs import utils as test_utils
+import experiment.measurer.datatypes as measurer_datatypes
 
 TEST_DATA_PATH = os.path.join(os.path.dirname(__file__), 'test_data')
 
@@ -146,8 +146,8 @@ def test_generate_summary(mocked_get_coverage_binary, mocked_execute,
 
     snapshot_measurer = measure_manager.SnapshotMeasurer(
         FUZZER, BENCHMARK, TRIAL_NUM, SNAPSHOT_LOGGER, REGION_COVERAGE)
-    snapshot_measurer.cov_summary_file = "/reports/cov_summary.txt"
-    snapshot_measurer.profdata_file = "/reports/data.profdata"
+    snapshot_measurer.cov_summary_file = '/reports/cov_summary.txt'
+    snapshot_measurer.profdata_file = '/reports/data.profdata'
     fs.create_dir('/reports')
     fs.create_file(snapshot_measurer.profdata_file, contents='fake_contents')
     snapshot_measurer.generate_summary(CYCLE)
@@ -162,7 +162,7 @@ def test_generate_summary(mocked_get_coverage_binary, mocked_execute,
     assert (len(mocked_execute.call_args_list)) == 1
     args = mocked_execute.call_args_list[0]
     assert args[0][0] == expected
-    assert args[1]['output_file'].name == "/reports/cov_summary.txt"
+    assert args[1]['output_file'].name == '/reports/cov_summary.txt'
 
 
 @mock.patch('common.logs.error')
@@ -174,7 +174,7 @@ def test_measure_trial_coverage(mocked_measure_snapshot_coverage, mocked_queue,
     """Tests that measure_trial_coverage works as expected."""
     min_cycle = 1
     max_cycle = 10
-    measure_request = measure_manager.SnapshotMeasureRequest(
+    measure_request = measurer_datatypes.SnapshotMeasureRequest(
         FUZZER, BENCHMARK, TRIAL_NUM, min_cycle)
     measure_manager.measure_trial_coverage(measure_request, max_cycle,
                                            mocked_queue(), False)
@@ -199,7 +199,7 @@ def test_measure_all_trials_not_ready(mocked_rsync, mocked_ls, experiment):
 @mock.patch('multiprocessing.pool.ThreadPool', test_utils.MockPool)
 @mock.patch('common.new_process.execute')
 @mock.patch('common.filesystem.directories_have_same_files')
-@pytest.mark.skip(reason="See crbug.com/1012329")
+@pytest.mark.skip(reason='See crbug.com/1012329')
 def test_measure_all_trials_no_more(mocked_directories_have_same_files,
                                     mocked_execute):
     """Test measure_all_trials does what is intended when the experiment is
@@ -210,82 +210,6 @@ def test_measure_all_trials_no_more(mocked_directories_have_same_files,
     assert not measure_manager.measure_all_trials(
         experiment_utils.get_experiment_name(), MAX_TOTAL_TIME, mock_pool,
         queue.Queue(), False)
-
-
-def test_is_cycle_unchanged_doesnt_exist(experiment):
-    """Test that is_cycle_unchanged can properly determine if a cycle is
-    unchanged or not when it needs to copy the file for the first time."""
-    snapshot_measurer = measure_manager.SnapshotMeasurer(
-        FUZZER, BENCHMARK, TRIAL_NUM, SNAPSHOT_LOGGER, REGION_COVERAGE)
-    this_cycle = 1
-    with test_utils.mock_popen_ctx_mgr(returncode=1):
-        assert not snapshot_measurer.is_cycle_unchanged(this_cycle)
-
-
-@mock.patch('common.filestore_utils.cp')
-@mock.patch('common.filesystem.read')
-def test_is_cycle_unchanged_first_copy(mocked_read, mocked_cp, experiment):
-    """Test that is_cycle_unchanged can properly determine if a cycle is
-    unchanged or not when it needs to copy the file for the first time."""
-    snapshot_measurer = measure_manager.SnapshotMeasurer(
-        FUZZER, BENCHMARK, TRIAL_NUM, SNAPSHOT_LOGGER, REGION_COVERAGE)
-    this_cycle = 100
-    unchanged_cycles_file_contents = (
-        '\n'.join([str(num) for num in range(10)] + [str(this_cycle)]))
-    mocked_read.return_value = unchanged_cycles_file_contents
-    mocked_cp.return_value = new_process.ProcessResult(0, '', False)
-
-    assert snapshot_measurer.is_cycle_unchanged(this_cycle)
-    assert not snapshot_measurer.is_cycle_unchanged(this_cycle + 1)
-
-
-def test_is_cycle_unchanged_update(fs, experiment):
-    """Test that is_cycle_unchanged can properly determine that a
-    cycle has changed when it has the file but needs to update it."""
-    snapshot_measurer = measure_manager.SnapshotMeasurer(
-        FUZZER, BENCHMARK, TRIAL_NUM, SNAPSHOT_LOGGER, REGION_COVERAGE)
-
-    this_cycle = 100
-    initial_unchanged_cycles_file_contents = (
-        '\n'.join([str(num) for num in range(10)] + [str(this_cycle)]))
-    fs.create_file(snapshot_measurer.unchanged_cycles_path,
-                   contents=initial_unchanged_cycles_file_contents)
-
-    next_cycle = this_cycle + 1
-    unchanged_cycles_file_contents = (initial_unchanged_cycles_file_contents +
-                                      '\n' + str(next_cycle))
-    assert snapshot_measurer.is_cycle_unchanged(this_cycle)
-    with mock.patch('common.filestore_utils.cp') as mocked_cp:
-        with mock.patch('common.filesystem.read') as mocked_read:
-            mocked_cp.return_value = new_process.ProcessResult(0, '', False)
-            mocked_read.return_value = unchanged_cycles_file_contents
-            assert snapshot_measurer.is_cycle_unchanged(next_cycle)
-
-
-@mock.patch('common.filestore_utils.cp')
-def test_is_cycle_unchanged_skip_cp(mocked_cp, fs, experiment):
-    """Check that is_cycle_unchanged doesn't call filestore_utils.cp
-    unnecessarily."""
-    snapshot_measurer = measure_manager.SnapshotMeasurer(
-        FUZZER, BENCHMARK, TRIAL_NUM, SNAPSHOT_LOGGER, REGION_COVERAGE)
-    this_cycle = 100
-    initial_unchanged_cycles_file_contents = (
-        '\n'.join([str(num) for num in range(10)] + [str(this_cycle + 1)]))
-    fs.create_file(snapshot_measurer.unchanged_cycles_path,
-                   contents=initial_unchanged_cycles_file_contents)
-    assert not snapshot_measurer.is_cycle_unchanged(this_cycle)
-    mocked_cp.assert_not_called()
-
-
-@mock.patch('common.filestore_utils.cp')
-def test_is_cycle_unchanged_no_file(mocked_cp, fs, experiment):
-    """Test that is_cycle_unchanged returns False when there is no
-    unchanged-cycles file."""
-    # Make sure we log if there is no unchanged-cycles file.
-    snapshot_measurer = measure_manager.SnapshotMeasurer(
-        FUZZER, BENCHMARK, TRIAL_NUM, SNAPSHOT_LOGGER, REGION_COVERAGE)
-    mocked_cp.return_value = new_process.ProcessResult(1, '', False)
-    assert not snapshot_measurer.is_cycle_unchanged(0)
 
 
 @mock.patch('common.new_process.execute')
@@ -302,12 +226,6 @@ def test_run_cov_new_units(_, mocked_execute, fs, environ):
     snapshot_measurer = measure_manager.SnapshotMeasurer(
         FUZZER, BENCHMARK, TRIAL_NUM, SNAPSHOT_LOGGER, REGION_COVERAGE)
     snapshot_measurer.initialize_measurement_dirs()
-    shared_units = ['shared1', 'shared2']
-    fs.create_file(snapshot_measurer.measured_files_path,
-                   contents='\n'.join(shared_units))
-    for unit in shared_units:
-        fs.create_file(os.path.join(snapshot_measurer.corpus_dir, unit))
-
     new_units = ['new1', 'new2']
     for unit in new_units:
         fs.create_file(os.path.join(snapshot_measurer.corpus_dir, unit))
@@ -359,9 +277,6 @@ def get_test_data_path(*subpaths):
     return os.path.join(TEST_DATA_PATH, *subpaths)
 
 
-# pylint: disable=no-self-use
-
-
 class TestIntegrationMeasurement:
     """Integration tests for measurement."""
 
@@ -369,10 +284,8 @@ class TestIntegrationMeasurement:
     # portable binary.
     @pytest.mark.skipif(not os.getenv('FUZZBENCH_TEST_INTEGRATION'),
                         reason='Not running integration tests.')
-    @mock.patch('experiment.measurer.measure_manager.SnapshotMeasurer'
-                '.is_cycle_unchanged')
     def test_measure_snapshot_coverage(  # pylint: disable=too-many-locals
-            self, mocked_is_cycle_unchanged, db, experiment, tmp_path):
+            self, db, experiment, tmp_path):
         """Integration test for measure_snapshot_coverage."""
         # WORK is set by experiment to a directory that only makes sense in a
         # fakefs. A directory containing necessary llvm tools is also added to
@@ -380,9 +293,8 @@ class TestIntegrationMeasurement:
         llvm_tools_path = get_test_data_path('llvm_tools')
         os.environ['PATH'] += os.pathsep + llvm_tools_path
         os.environ['WORK'] = str(tmp_path)
-        mocked_is_cycle_unchanged.return_value = False
         # Set up the coverage binary.
-        benchmark = 'freetype2-2017'
+        benchmark = 'freetype2_ftfuzzer'
         coverage_binary_src = get_test_data_path(
             'test_measure_snapshot_coverage', benchmark + '-coverage')
         benchmark_cov_binary_dir = os.path.join(
@@ -409,7 +321,7 @@ class TestIntegrationMeasurement:
         # Set up the snapshot archive.
         cycle = 1
         archive = get_test_data_path('test_measure_snapshot_coverage',
-                                     'corpus-archive-%04d.tar.gz' % cycle)
+                                     f'corpus-archive-{cycle:04d}.tar.gz')
         corpus_dir = os.path.join(snapshot_measurer.trial_dir, 'corpus')
         os.makedirs(corpus_dir)
         shutil.copy(archive, corpus_dir)
@@ -431,7 +343,7 @@ class TestIntegrationMeasurement:
 def test_extract_corpus(archive_name, tmp_path):
     """"Tests that extract_corpus unpacks a corpus as we expect."""
     archive_path = get_test_data_path(archive_name)
-    measure_manager.extract_corpus(archive_path, set(), tmp_path)
+    measure_manager.extract_corpus(archive_path, tmp_path)
     expected_corpus_files = {
         '5ea57dfc9631f35beecb5016c4f1366eb6faa810',
         '2f1507c3229c5a1f8b619a542a8e03ccdbb3c29c',
@@ -497,3 +409,123 @@ def test_path_exists_in_experiment_filestore(mocked_execute, environ):
     mocked_execute.assert_called_with(
         ['gsutil', 'ls', 'gs://cloud-bucket/example-experiment'],
         expect_zero=False)
+
+
+def test_consume_unmapped_type_from_response_queue():
+    """Tests the scenario where an unmapped type is retrieved from the response
+    queue. This scenario is not expected to happen, so in this case no snapshots
+    are returned."""
+    # Use normal queue here as multiprocessing queue gives flaky tests.
+    response_queue = queue.Queue()
+    response_queue.put('unexpected string')
+    snapshots = measure_manager.consume_snapshots_from_response_queue(
+        response_queue, set())
+    assert not snapshots
+
+
+def test_consume_retry_type_from_response_queue():
+    """Tests the scenario where a retry object is retrieved from the
+    response queue. In this scenario, we want to remove the snapshot identifier
+    from the queued_snapshots set, as this allows the measurement task to be
+    retried in the future."""
+    # Use normal queue here as multiprocessing queue gives flaky tests.
+    response_queue = queue.Queue()
+    retry_request_object = measurer_datatypes.RetryRequest(
+        'fuzzer', 'benchmark', TRIAL_NUM, CYCLE)
+    snapshot_identifier = (TRIAL_NUM, CYCLE)
+    response_queue.put(retry_request_object)
+    queued_snapshots_set = set([snapshot_identifier])
+    snapshots = measure_manager.consume_snapshots_from_response_queue(
+        response_queue, queued_snapshots_set)
+    assert not snapshots
+    assert len(queued_snapshots_set) == 0
+
+
+def test_consume_snapshot_type_from_response_queue():
+    """Tests the scenario where a measured snapshot is retrieved from the
+    response queue. In this scenario, we want to return the snapshot in the
+    function."""
+    # Use normal queue here as multiprocessing queue gives flaky tests.
+    response_queue = queue.Queue()
+    snapshot_identifier = (TRIAL_NUM, CYCLE)
+    queued_snapshots_set = set([snapshot_identifier])
+    measured_snapshot = models.Snapshot(trial_id=TRIAL_NUM)
+    response_queue.put(measured_snapshot)
+    assert response_queue.qsize() == 1
+    snapshots = measure_manager.consume_snapshots_from_response_queue(
+        response_queue, queued_snapshots_set)
+    assert len(snapshots) == 1
+
+
+@mock.patch('experiment.measurer.measure_manager.get_unmeasured_snapshots')
+def test_measure_manager_inner_loop_break_condition(
+        mocked_get_unmeasured_snapshots):
+    """Tests that the measure manager inner loop returns False when there's no
+    more snapshots left to be measured."""
+    # Empty list means no more snapshots left to be measured.
+    mocked_get_unmeasured_snapshots.return_value = []
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+    continue_inner_loop = measure_manager.measure_manager_inner_loop(
+        'experiment', 1, request_queue, response_queue, set())
+    assert not continue_inner_loop
+
+
+@mock.patch('experiment.measurer.measure_manager.get_unmeasured_snapshots')
+@mock.patch(
+    'experiment.measurer.measure_manager.consume_snapshots_from_response_queue')
+def test_measure_manager_inner_loop_writes_to_request_queue(
+        mocked_consume_snapshots_from_response_queue,
+        mocked_get_unmeasured_snapshots):
+    """Tests that the measure manager inner loop is writing measurement tasks to
+    request queue."""
+    mocked_get_unmeasured_snapshots.return_value = [
+        measurer_datatypes.SnapshotMeasureRequest('fuzzer', 'benchmark', 0, 0)
+    ]
+    mocked_consume_snapshots_from_response_queue.return_value = []
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+    measure_manager.measure_manager_inner_loop('experiment', 1, request_queue,
+                                               response_queue, set())
+    assert request_queue.qsize() == 1
+
+
+@mock.patch('experiment.measurer.measure_manager.get_unmeasured_snapshots')
+@mock.patch(
+    'experiment.measurer.measure_manager.consume_snapshots_from_response_queue')
+@mock.patch('database.utils.add_all')
+def test_measure_manager_inner_loop_dont_write_to_db(
+        mocked_add_all, mocked_consume_snapshots_from_response_queue,
+        mocked_get_unmeasured_snapshots):
+    """Tests that the measure manager inner loop does not call add_all to write
+    to the database, when there are no measured snapshots to be written."""
+    mocked_get_unmeasured_snapshots.return_value = [
+        measurer_datatypes.SnapshotMeasureRequest('fuzzer', 'benchmark', 0, 0)
+    ]
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+    mocked_consume_snapshots_from_response_queue.return_value = []
+    measure_manager.measure_manager_inner_loop('experiment', 1, request_queue,
+                                               response_queue, set())
+    mocked_add_all.not_called()
+
+
+@mock.patch('experiment.measurer.measure_manager.get_unmeasured_snapshots')
+@mock.patch(
+    'experiment.measurer.measure_manager.consume_snapshots_from_response_queue')
+@mock.patch('database.utils.add_all')
+def test_measure_manager_inner_loop_writes_to_db(
+        mocked_add_all, mocked_consume_snapshots_from_response_queue,
+        mocked_get_unmeasured_snapshots):
+    """Tests that the measure manager inner loop calls add_all to write
+    to the database, when there are measured snapshots to be written."""
+    mocked_get_unmeasured_snapshots.return_value = [
+        measurer_datatypes.SnapshotMeasureRequest('fuzzer', 'benchmark', 0, 0)
+    ]
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+    snapshot_model = models.Snapshot(trial_id=1)
+    mocked_consume_snapshots_from_response_queue.return_value = [snapshot_model]
+    measure_manager.measure_manager_inner_loop('experiment', 1, request_queue,
+                                               response_queue, set())
+    mocked_add_all.assert_called_with([snapshot_model])

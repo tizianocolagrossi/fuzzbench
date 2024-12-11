@@ -29,7 +29,7 @@ from analysis import data_utils
 
 CORE_FUZZERS_YAML = os.path.join(utils.ROOT_DIR, 'service', 'core-fuzzers.yaml')
 
-logger = logs.Logger('reporter')  # pylint: disable=invalid-name
+logger = logs.Logger()  # pylint: disable=invalid-name
 
 
 def get_reports_dir():
@@ -64,9 +64,12 @@ def output_report(experiment_config: dict,
     # Don't merge with nonprivate experiments until the very end as doing it
     # while the experiment is in progress will produce unusable realtime
     # results.
+    logger.info('In progress: %s.', in_progress)
     merge_with_nonprivate = (not in_progress and experiment_config.get(
         'merge_with_nonprivate', False))
+    logger.info('Is merging with nonprivate: %s.', merge_with_nonprivate)
 
+    experiment_benchmarks = set(experiment_config['benchmarks'])
     try:
         logger.debug('Generating report.')
         filesystem.recreate_directory(reports_dir)
@@ -77,7 +80,8 @@ def output_report(experiment_config: dict,
             fuzzers=fuzzers,
             in_progress=in_progress,
             merge_with_clobber_nonprivate=merge_with_nonprivate,
-            coverage_report=coverage_report)
+            coverage_report=coverage_report,
+            experiment_benchmarks=experiment_benchmarks)
         filestore_utils.rsync(
             str(reports_dir),
             web_filestore_path,

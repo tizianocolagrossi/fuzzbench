@@ -15,31 +15,40 @@
 ARG parent_image
 FROM $parent_image
 
-# Install libstdc++ to use llvm_mode.
+# Uninstall old Rust & Install the latest one.
+RUN if which rustup; then rustup self uninstall -y; fi && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs > /rustup.sh && \
+    sh /rustup.sh --default-toolchain nightly-2024-08-12 -y && \
+    rm /rustup.sh
+
+# Install dependencies.
 RUN apt-get update && \
-    apt-get install -y wget libstdc++-5-dev libtool-bin automake flex bison \
-                       libglib2.0-dev libpixman-1-dev python3-setuptools unzip \
-                       apt-utils apt-transport-https ca-certificates joe curl
+    apt-get remove -y llvm-10 && \
+    apt-get install -y \
+        build-essential \
+        lsb-release wget software-properties-common gnupg && \
+    apt-get install -y wget libstdc++5 libtool-bin automake flex bison \
+        libglib2.0-dev libpixman-1-dev python3-setuptools unzip \
+        apt-utils apt-transport-https ca-certificates joe curl && \
+    wget https://apt.llvm.org/llvm.sh && chmod +x llvm.sh && ./llvm.sh 17
 
-# Uninstall old Rust
-RUN if which rustup; then rustup self uninstall -y; fi
+RUN wget https://gist.githubusercontent.com/tokatoka/26f4ba95991c6e33139999976332aa8e/raw/698ac2087d58ce5c7a6ad59adce58dbfdc32bd46/createAliases.sh && chmod u+x ./createAliases.sh && ./createAliases.sh 
 
-# Install latest Rust
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs > /rustup.sh && \
-    sh /rustup.sh -y
+# Download libafl.
+RUN git clone https://github.com/AFLplusplus/LibAFL /libafl
 
-# Download libafl
-RUN git clone https://github.com/AFLplusplus/libafl /libafl && \
-    cd /libafl && \
-    git checkout 7da715602866f4c173acf54a0aabe6b412754cd4
+# Checkout a current commit
+RUN cd /libafl && git pull && git checkout f856092f3d393056b010fcae3b086769377cba18 || true
+# Note that due a nightly bug it is currently fixed to a known version on top!
 
-# Compile libafl
-RUN cd /libafl && unset CFLAGS && unset CXXFLAGS && \
-    export CC=clang && export CXX=clang++ && \
+# Compile libafl.
+RUN cd /libafl && \
+    unset CFLAGS CXXFLAGS && \
     export LIBAFL_EDGES_MAP_SIZE=2621440 && \
-    cd ./fuzzers/fuzzbench_weighted && \
-    PATH="$PATH:/root/.cargo/bin/" cargo build --release
+    cd ./fuzzers/fuzzbench/fuzzbench && \
+    PATH="/root/.cargo/bin/:$PATH" cargo build --profile release-fuzzbench --features no_link_main
 
-RUN wget https://gist.githubusercontent.com/andreafioraldi/e5f60d68c98b31665a274207cfd05541/raw/4da351a321f1408df566a9cf2ce7cde6eeab3904/empty_fuzzer_lib.c -O /empty_fuzzer_lib.c && \
-    clang -c /empty_fuzzer_lib.c && \
-    ar r /emptylib.a *.o
+# Auxiliary weak references.
+RUN cd /libafl/fuzzers/fuzzbench/fuzzbench && \
+    clang -c stub_rt.c && \
+    ar r /stub_rt.a stub_rt.o

@@ -15,21 +15,35 @@
 ARG parent_image
 FROM $parent_image
 
-# Install libstdc++ to use llvm_mode.
 RUN apt-get update && \
-    apt-get install -y wget libstdc++-5-dev libtool-bin automake flex bison \
-                       libglib2.0-dev libpixman-1-dev python3-setuptools unzip \
-                       apt-utils apt-transport-https ca-certificates
+    apt-get install -y \
+        build-essential \
+        python3-dev \
+        python3-setuptools \
+        automake \
+        cmake \
+        git \
+        flex \
+        bison \
+        libglib2.0-dev \
+        libpixman-1-dev \
+        cargo \
+        libgtk-3-dev \
+        # for QEMU mode
+        ninja-build \
+        gcc-$(gcc --version|head -n1|sed 's/\..*//'|sed 's/.* //')-plugin-dev \
+        libstdc++-$(gcc --version|head -n1|sed 's/\..*//'|sed 's/.* //')-dev
 
-# Download and compile afl++.
-RUN git clone https://github.com/AFLplusplus/AFLplusplus.git /afl && \
+# Download afl++.
+RUN git clone -b dev https://github.com/AFLplusplus/AFLplusplus /afl && \
     cd /afl && \
-    git checkout e21738a24852e0ed9b346c28aeb4132a34d5b7cc
+    git checkout 56d5aa3101945e81519a3fac8783d0d8fad82779 || \
+    true
 
 # Build without Python support as we don't need it.
 # Set AFL_NO_X86 to skip flaky tests.
-RUN cd /afl && unset CFLAGS && unset CXXFLAGS && \
-    export CC=clang && export AFL_NO_X86=1 && \
-    PYTHON_INCLUDE=/ make && make install && \
-    make -C utils/aflpp_driver && \
+RUN cd /afl && \
+    unset CFLAGS CXXFLAGS && \
+    export CC=clang AFL_NO_X86=1 && \
+    PYTHON_INCLUDE=/ make && \
     cp utils/aflpp_driver/libAFLDriver.a /

@@ -12,8 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Utility functions for data (frame) transformations."""
+import pandas as pd
+from clusterfuzz.stacktraces.crash_comparer import CrashComparer
+
 from analysis import stat_tests
+from common import benchmark_utils
 from common import environment
+from common import logs
+
+logger = logs.Logger()
 
 
 class EmptyDataError(ValueError):
@@ -43,7 +50,7 @@ def validate_data(experiment_df):
     missing_columns = expected_columns.difference(experiment_df.columns)
     if missing_columns:
         raise ValueError(
-            'Missing columns in experiment data: {}'.format(missing_columns))
+            f'Missing columns in experiment data: {missing_columns}')
 
 
 def drop_uninteresting_columns(experiment_df):
@@ -85,7 +92,7 @@ def clobber_experiments_data(df, experiments):
         experiment_pairs = experiment_data[['benchmark',
                                             'fuzzer']].apply(tuple, axis=1)
         to_include = experiment_data[~experiment_pairs.isin(covered_pairs)]
-        result = result.append(to_include)
+        result = pd.concat([result, to_include])
     return result
 
 
@@ -97,7 +104,14 @@ def filter_fuzzers(experiment_df, included_fuzzers):
 def filter_benchmarks(experiment_df, included_benchmarks):
     """Returns table with only rows where benchmark is in
     |included_benchmarks|."""
-    return experiment_df[experiment_df['benchmark'].isin(included_benchmarks)]
+    valid_benchmarks = [
+        benchmark for benchmark in included_benchmarks
+        if benchmark_utils.validate(benchmark)
+    ]
+    logger.warning('Filtered out invalid benchmarks: %s.',
+                   set(included_benchmarks) - set(valid_benchmarks))
+    logger.debug('Valid benchmarks: %s.', valid_benchmarks)
+    return experiment_df[experiment_df['benchmark'].isin(valid_benchmarks)]
 
 
 def label_fuzzers_by_experiment(experiment_df):
@@ -115,17 +129,39 @@ def filter_max_time(experiment_df, max_time):
     return experiment_df[experiment_df['time'] <= max_time]
 
 
+def is_unique_crash(crash_group):
+    """Check if each crash in |crash_group| is unique with CF's crash comparer.
+    Return the |crash_group| with an extra columns representing if that crash
+    is the first occurrence."""
+    unique_crashes = set()
+    is_firsts = []
+    for crash in crash_group.crash_key:
+        # crash_key is an concatenation of crash type and crash state:
+        # '{crash_type}:{crash_state}'
+        crash_state = ':'.join(str(crash).split(':')[1:])
+        is_unique = True
+        for unique_crash in unique_crashes:
+            if CrashComparer(crash_state, unique_crash).is_similar():
+                is_unique = False
+                break
+        unique_crashes.add(crash_state)
+        is_firsts.append(is_unique)
+    crash_group['firsts'] = is_firsts
+    return crash_group.firsts
+
+
 def add_bugs_covered_column(experiment_df):
     """Return a modified experiment df in which adds a |bugs_covered| column,
     a cumulative count of bugs covered over time."""
     if 'crash_key' not in experiment_df:
         experiment_df['bugs_covered'] = 0
         return experiment_df
-    grouping1 = ['fuzzer', 'benchmark', 'trial_id', 'crash_key']
     grouping2 = ['fuzzer', 'benchmark', 'trial_id']
     grouping3 = ['fuzzer', 'benchmark', 'trial_id', 'time']
     df = experiment_df.sort_values(grouping3)
-    df['firsts'] = ~df.duplicated(subset=grouping1) & ~df.crash_key.isna()
+    df['firsts'] = (
+        df.groupby(grouping2, group_keys=False).apply(is_unique_crash) &
+        ~df.crash_key.isna())
     df['bugs_cumsum'] = df.groupby(grouping2)['firsts'].transform('cumsum')
     df['bugs_covered'] = (
         df.groupby(grouping3)['bugs_cumsum'].transform('max').astype(int))
@@ -221,7 +257,10 @@ def experiment_summary(experiment_snapshots_df):
 def benchmark_rank_by_mean(benchmark_snapshot_df, key='edges_covered'):
     """Returns ranking of fuzzers based on mean coverage."""
     assert benchmark_snapshot_df.time.nunique() == 1, 'Not a snapshot!'
-    means = benchmark_snapshot_df.groupby('fuzzer')[key].mean()
+    logger.debug('Mean: %s',
+                 benchmark_snapshot_df.groupby('fuzzer')[key].mean())
+    benchmark_snapshot_df = benchmark_snapshot_df.fillna(0)
+    means = benchmark_snapshot_df.groupby('fuzzer')[key].mean().astype(int)
     means.rename('mean cov', inplace=True)
     return means.sort_values(ascending=False)
 
@@ -229,7 +268,10 @@ def benchmark_rank_by_mean(benchmark_snapshot_df, key='edges_covered'):
 def benchmark_rank_by_median(benchmark_snapshot_df, key='edges_covered'):
     """Returns ranking of fuzzers based on median coverage."""
     assert benchmark_snapshot_df.time.nunique() == 1, 'Not a snapshot!'
-    medians = benchmark_snapshot_df.groupby('fuzzer')[key].median()
+    logger.debug('Median: %s',
+                 benchmark_snapshot_df.groupby('fuzzer')[key].median())
+    benchmark_snapshot_df = benchmark_snapshot_df.fillna(0)
+    medians = benchmark_snapshot_df.groupby('fuzzer')[key].median().astype(int)
     medians.rename('median cov', inplace=True)
     return medians.sort_values(ascending=False)
 
@@ -237,8 +279,12 @@ def benchmark_rank_by_median(benchmark_snapshot_df, key='edges_covered'):
 def benchmark_rank_by_percent(benchmark_snapshot_df, key='edges_covered'):
     """Returns ranking of fuzzers based on median (normalized/%) coverage."""
     assert benchmark_snapshot_df.time.nunique() == 1, 'Not a snapshot!'
-    max_key = "{}_percent_max".format(key)
-    medians = benchmark_snapshot_df.groupby('fuzzer')[max_key].median()
+    max_key = f'{key}_percent_max'
+    logger.debug('Median: %s',
+                 benchmark_snapshot_df.groupby('fuzzer')[max_key].median())
+    benchmark_snapshot_df = benchmark_snapshot_df.fillna(0)
+    medians = benchmark_snapshot_df.groupby('fuzzer')[max_key].median().astype(
+        int)
     return medians.sort_values(ascending=False)
 
 
@@ -316,9 +362,9 @@ def experiment_rank_by_average_rank(experiment_pivot_df):
     (smaller is better).
     """
     # Rank fuzzers in each benchmark block.
-    pivot_ranked = experiment_pivot_df.rank('columns',
-                                            na_option='keep',
-                                            ascending=False)
+    pivot_ranked = experiment_pivot_df.fillna(0).rank('columns',
+                                                      method='min',
+                                                      ascending=False)
     average_ranks = pivot_ranked.mean().sort_values()
     return average_ranks.rename('average rank')
 
@@ -327,9 +373,9 @@ def experiment_rank_by_num_firsts(experiment_pivot_df):
     """Creates experiment level ranking by number of first places in per
     benchmark rankings (higher is better)."""
     # Rank fuzzers in each benchmark block.
-    pivot_ranked = experiment_pivot_df.rank('columns',
-                                            na_option='keep',
-                                            ascending=False)
+    pivot_ranked = experiment_pivot_df.fillna(0).rank('columns',
+                                                      method='min',
+                                                      ascending=False)
     # Count first places for each fuzzer.
     firsts = pivot_ranked[pivot_ranked == 1]
     num_firsts = firsts.sum().sort_values(ascending=False)
@@ -340,9 +386,9 @@ def experiment_rank_by_average_normalized_score(experiment_pivot_df):
     """Creates experiment level ranking by taking the average of normalized per
     benchmark scores from 0 to 100, where 100 is the highest reach coverage."""
     # Normalize coverage values.
-    benchmark_maximum = experiment_pivot_df.max(axis='columns')
-    normalized_score = experiment_pivot_df.div(benchmark_maximum,
-                                               axis='index').mul(100)
+    benchmark_maximum = experiment_pivot_df.fillna(0).max(axis='columns')
+    normalized_score = experiment_pivot_df.fillna(0).div(benchmark_maximum,
+                                                         axis='index').mul(100)
 
     average_score = normalized_score.mean().sort_values(ascending=False)
     return average_score.rename('average normalized score')
@@ -367,11 +413,11 @@ def add_relative_columns(experiment_df):
     for key in ['edges_covered', 'bugs_covered']:
         if key not in df.columns:
             continue
-        new_col = "{}_percent_max".format(key)
+        new_col = f'{key}_percent_max'
         df[new_col] = df[key] / df.groupby('benchmark')[key].transform(
             'max') * 100.0
 
-        new_col = "{}_percent_fmax".format(key)
+        new_col = f'{key}_percent_fmax'
         df[new_col] = df[key] / df.groupby(['benchmark', 'fuzzer'
                                            ])[key].transform('max') * 100
     return df
